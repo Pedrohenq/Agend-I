@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0ea5e9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#10b981;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Fundo circular -->
+  <circle cx="50" cy="50" r="48" fill="url(#bgGrad)"/>
+  
+  <!-- Cruz médica -->
+  <rect x="40" y="22" width="20" height="56" rx="4" fill="white"/>
+  <rect x="22" y="40" width="56" height="20" rx="4" fill="white"/>
+  
+  <!-- Pequeno coração no centro -->
+  <path d="M50 42 C50 38, 44 35, 44 40 C44 44, 50 50, 50 50 C50 50, 56 44, 56 40 C56 35, 50 38, 50 42" fill="#ef4444"/>
+</svg>
