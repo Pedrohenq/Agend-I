@@ -20,6 +20,7 @@ import { collection, doc, setDoc, getDoc, getDocs, query, where, orderBy,
          addDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { format, addMinutes, parse, isBefore, addDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import ProfessionalPatientsPage from './components/ProfessionalPatientsPage';
 
 // ============= PÁGINA INICIAL =============
 function HomePage() {
@@ -3305,6 +3306,14 @@ function ProfessionalAgendaPage() {
                 <Calendar className="w-5 h-5" />
                 Minha Disponibilidade
               </Link>
+
+              <Link 
+               to="/profissional/pacientes" 
+               className="text-gray-700 hover:text-green-600 px-4 py-2 rounded-lg transition flex items-center gap-2"
+               >
+                  <Users className="w-5 h-5" />
+                    Meus Pacientes
+                    </Link>
               <button
                 onClick={handleLogout}
                 className="text-red-600 hover:bg-red-50 px-4 py-2 rounded-lg transition flex items-center gap-2"
@@ -5124,7 +5133,8 @@ export function App() {
         {/* Área Profissional */}
         <Route path="/profissional/agenda" element={<ProfessionalAgendaPage />} />
         <Route path="/profissional/disponibilidade" element={<ProfessionalAvailabilityPage />} />
-        
+        <Route path="/profissional/pacientes" element={<ProfessionalPatientsPage />} />
+
         {/* Teleconsulta */}
         <Route path="/teleconsulta/:tenantId/:appointmentId" element={<TeleconsultaSplitScreen />} />
         

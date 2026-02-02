@@ -15,19 +15,32 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronUp,
-  History
+  History,
+  ClipboardList,
+  Info,
+  RefreshCw
 } from 'lucide-react';
 import { MedicalRecord } from '../types';
 import { getMedicalRecordService } from '../services/medicalRecord';
+import { db } from '../config/firebase';
+import { doc, getDoc } from 'firebase/firestore';
 
 interface MedicalRecordFormProps {
   tenantId: string;
   appointmentId: string;
   patientId: string;
   professionalId: string;
-  isCompact?: boolean; // Para modo split-screen
+  isCompact?: boolean;
   onRecordLoaded?: (record: MedicalRecord) => void;
   onSaveStatusChange?: (status: 'saving' | 'saved' | 'error') => void;
+}
+
+interface AnamnesisResponse {
+  questionId: string;
+  questionLabel: string;
+  questionType: 'text' | 'textarea' | 'boolean' | 'select' | 'number';
+  answer: string | boolean | number;
+  required: boolean;
 }
 
 export default function MedicalRecordForm({
@@ -44,12 +57,17 @@ export default function MedicalRecordForm({
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [showVitalSigns, setShowVitalSigns] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showAnamnesis, setShowAnamnesis] = useState(true);
   const [patientHistory, setPatientHistory] = useState<MedicalRecord[]>([]);
   const [isReadOnly, setIsReadOnly] = useState(false);
+  const [anamnesisResponses, setAnamnesisResponses] = useState<Record<string, AnamnesisResponse>>({});
+  const [hasAnamnesis, setHasAnamnesis] = useState(false);
+  const [loadingAnamnesis, setLoadingAnamnesis] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const service = getMedicalRecordService(tenantId);
 
-  // Carregar ou criar prontuário
+  // Carregar prontuário e anamnese
   useEffect(() => {
     loadRecord();
     return () => {
@@ -60,15 +78,25 @@ export default function MedicalRecordForm({
   const loadRecord = async () => {
     try {
       setLoading(true);
-      console.log('[MedicalRecordForm] Carregando prontuário:', { tenantId, appointmentId, patientId, professionalId });
+      setError(null);
+      
+      console.log('=== INÍCIO DO CARREGAMENTO DO PRONTUÁRIO ===');
+      console.log('TenantId:', tenantId);
+      console.log('AppointmentId:', appointmentId);
+      console.log('PatientId:', patientId);
+      console.log('ProfessionalId:', professionalId);
       
       // Validar parâmetros
       if (!tenantId || !appointmentId || !patientId || !professionalId) {
-        console.error('[MedicalRecordForm] Parâmetros inválidos:', { tenantId, appointmentId, patientId, professionalId });
+        const errorMsg = 'Dados incompletos para carregar prontuário';
+        console.error('❌ ERRO:', errorMsg);
+        setError(errorMsg);
         setLoading(false);
         return;
       }
 
+      // Carregar prontuário
+      console.log('📋 Carregando prontuário...');
       const loadedRecord = await service.getOrCreateRecord(
         appointmentId,
         patientId,
@@ -76,7 +104,7 @@ export default function MedicalRecordForm({
       );
       
       if (loadedRecord) {
-        console.log('[MedicalRecordForm] Prontuário carregado:', loadedRecord.id);
+        console.log('✅ Prontuário carregado com sucesso:', loadedRecord.id);
         setRecord(loadedRecord);
         setIsReadOnly(loadedRecord.status === 'completed' || loadedRecord.status === 'signed');
         
@@ -84,19 +112,97 @@ export default function MedicalRecordForm({
           onRecordLoaded(loadedRecord);
         }
 
-        // Carregar histórico do paciente (não bloquear se falhar)
+        // Carregar anamnese
+        await loadAnamnesis();
+
+        // Carregar histórico do paciente
         try {
+          console.log('📚 Carregando histórico do paciente...');
           const history = await service.getPatientHistory(patientId);
           setPatientHistory(history.filter(r => r.id !== loadedRecord.id));
+          console.log('✅ Histórico carregado:', history.length, 'registros');
         } catch (historyError) {
-          console.warn('[MedicalRecordForm] Erro ao carregar histórico:', historyError);
+          console.warn('⚠️ Erro ao carregar histórico:', historyError);
         }
+      } else {
+        const errorMsg = 'Não foi possível criar/carregar o prontuário';
+        console.error('❌', errorMsg);
+        setError(errorMsg);
       }
-    } catch (error) {
-      console.error('[MedicalRecordForm] Erro ao carregar prontuário:', error);
+    } catch (error: any) {
+      console.error('❌ ERRO FATAL ao carregar prontuário:', error);
+      console.error('Stack:', error.stack);
+      setError(error.message || 'Erro ao carregar prontuário');
       setRecord(null);
     } finally {
       setLoading(false);
+      console.log('=== FIM DO CARREGAMENTO DO PRONTUÁRIO ===\n');
+    }
+  };
+
+  const loadAnamnesis = async () => {
+    try {
+      setLoadingAnamnesis(true);
+      
+      console.log('=== INÍCIO DO CARREGAMENTO DA ANAMNESE ===');
+      console.log('📍 Caminho no Firestore:');
+      console.log(`   tenants/${tenantId}/anamnesisResponses/${appointmentId}`);
+      
+      // Buscar diretamente no Firestore
+      const anamnesisRef = doc(db, `tenants/${tenantId}/anamnesisResponses`, appointmentId);
+      console.log('🔍 Buscando documento...');
+      
+      const anamnesisDoc = await getDoc(anamnesisRef);
+      
+      if (anamnesisDoc.exists()) {
+        console.log('✅ Documento de anamnese ENCONTRADO!');
+        const data = anamnesisDoc.data();
+        console.log('📦 Dados completos:', JSON.stringify(data, null, 2));
+        
+        if (data && data.responses) {
+          const responsesData = data.responses;
+          console.log('📝 Respostas encontradas:', Object.keys(responsesData).length);
+          
+          // Converter para o formato esperado
+          const formattedResponses: Record<string, AnamnesisResponse> = {};
+          
+          Object.entries(responsesData).forEach(([key, value]: [string, any]) => {
+            console.log(`   - Pergunta ${key}:`, value);
+            formattedResponses[key] = {
+              questionId: value.questionId || key,
+              questionLabel: value.questionLabel || 'Pergunta sem título',
+              questionType: value.questionType || 'text',
+              answer: value.answer,
+              required: value.required || false
+            };
+          });
+          
+          setAnamnesisResponses(formattedResponses);
+          setHasAnamnesis(true);
+          console.log('✅ Anamnese carregada com sucesso!');
+        } else {
+          console.log('⚠️ Documento existe mas não tem campo "responses"');
+          console.log('Estrutura do documento:', Object.keys(data));
+          setAnamnesisResponses({});
+          setHasAnamnesis(false);
+        }
+      } else {
+        console.log('ℹ️ Documento de anamnese NÃO existe');
+        console.log('   Isso significa que:');
+        console.log('   1. O paciente não preencheu anamnese, OU');
+        console.log('   2. A especialidade não requer anamnese');
+        setAnamnesisResponses({});
+        setHasAnamnesis(false);
+      }
+    } catch (error: any) {
+      console.error('❌ ERRO ao carregar anamnese:', error);
+      console.error('Mensagem:', error.message);
+      console.error('Stack:', error.stack);
+      setHasAnamnesis(false);
+      setAnamnesisResponses({});
+    } finally {
+      setLoadingAnamnesis(false);
+      console.log('=== FIM DO CARREGAMENTO DA ANAMNESE ===\n');
     }
   };
 
@@ -114,8 +220,6 @@ export default function MedicalRecordForm({
       service.autoSave(prev.id, { [field]: value }, () => {
         setSaveStatus('saved');
         if (onSaveStatusChange) onSaveStatusChange('saved');
-        
-        // Resetar status após 2 segundos
         setTimeout(() => setSaveStatus('idle'), 2000);
       });
 
@@ -161,29 +265,86 @@ export default function MedicalRecordForm({
     }
   };
 
-  // Formatação de CPF
+  // Retry loading
+  const handleRetry = () => {
+    loadRecord();
+  };
+
+  // Formatação
   const formatCpf = (cpf: string) => {
     if (!cpf) return '';
     return cpf.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4');
   };
 
+  const formatAnswer = (response: AnamnesisResponse) => {
+    if (response.questionType === 'boolean') {
+      return response.answer === true || response.answer === 'true' ? 'Sim' : 'Não';
+    }
+    return String(response.answer);
+  };
+
+  // Loading state
   if (loading) {
     return (
       <div className={`bg-white ${isCompact ? 'h-full' : 'rounded-lg shadow-lg'} p-6 flex items-center justify-center`}>
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
           <p className="text-gray-500">Carregando prontuário...</p>
+          <p className="text-xs text-gray-400 mt-2">Aguarde enquanto buscamos os dados</p>
         </div>
       </div>
     );
   }
 
+  // Error state
+  if (error) {
+    return (
+      <div className={`bg-white ${isCompact ? 'h-full' : 'rounded-lg shadow-lg'} p-6`}>
+        <div className="text-center">
+          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <h3 className="text-lg font-semibold text-gray-800 mb-2">Erro ao carregar prontuário</h3>
+          <p className="text-red-600 mb-4">{error}</p>
+          
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4 text-left">
+            <p className="text-sm font-semibold text-red-800 mb-2">Informações de Debug:</p>
+            <div className="text-xs text-red-700 font-mono space-y-1">
+              <p>TenantId: {tenantId || 'AUSENTE'}</p>
+              <p>AppointmentId: {appointmentId || 'AUSENTE'}</p>
+              <p>PatientId: {patientId || 'AUSENTE'}</p>
+              <p>ProfessionalId: {professionalId || 'AUSENTE'}</p>
+            </div>
+          </div>
+          
+          <button
+            onClick={handleRetry}
+            className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2 mx-auto"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Tentar Novamente
+          </button>
+          
+          <p className="text-xs text-gray-500 mt-4">
+            Verifique o console do navegador (F12) para mais detalhes
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // No record state
   if (!record) {
     return (
       <div className={`bg-white ${isCompact ? 'h-full' : 'rounded-lg shadow-lg'} p-6`}>
         <div className="text-center text-red-500">
           <AlertCircle className="w-12 h-12 mx-auto mb-4" />
-          <p>Erro ao carregar prontuário</p>
+          <p>Prontuário não disponível</p>
+          <button
+            onClick={handleRetry}
+            className="mt-4 bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2 mx-auto"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Recarregar
+          </button>
         </div>
       </div>
     );
@@ -191,7 +352,7 @@ export default function MedicalRecordForm({
 
   return (
     <div className={`bg-white ${isCompact ? 'h-full overflow-y-auto' : 'rounded-lg shadow-lg'}`}>
-      {/* Header com status de salvamento */}
+      {/* Header */}
       <div className={`sticky top-0 bg-white z-10 border-b ${isCompact ? 'px-4 py-3' : 'px-6 py-4'}`}>
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center space-x-2">
@@ -202,7 +363,6 @@ export default function MedicalRecordForm({
           </div>
           
           <div className="flex items-center space-x-2">
-            {/* Status de salvamento */}
             {saveStatus === 'saving' && (
               <span className="flex items-center text-yellow-600 text-sm">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600 mr-2"></div>
@@ -216,7 +376,6 @@ export default function MedicalRecordForm({
               </span>
             )}
             
-            {/* Status do prontuário */}
             <span className={`px-2 py-1 rounded-full text-xs font-medium ${
               record.status === 'draft' ? 'bg-gray-100 text-gray-600' :
               record.status === 'in_progress' ? 'bg-yellow-100 text-yellow-600' :
@@ -239,7 +398,7 @@ export default function MedicalRecordForm({
       </div>
 
       <div className={`${isCompact ? 'px-4 py-3' : 'p-6'} space-y-4`}>
-        {/* Cabeçalho do Paciente - ReadOnly */}
+        {/* Cabeçalho do Paciente */}
         <div className="bg-gradient-to-r from-blue-50 to-green-50 rounded-lg p-4 border border-blue-100">
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -279,52 +438,134 @@ export default function MedicalRecordForm({
             </div>
           </div>
           
-          {/* Botão para ver histórico */}
           {patientHistory.length > 0 && (
-            <button
-              onClick={() => setShowHistory(!showHistory)}
-              className="mt-3 flex items-center text-blue-600 hover:text-blue-700 text-sm"
-            >
-              <History className="w-4 h-4 mr-1" />
-              Ver {patientHistory.length} atendimento(s) anterior(es)
-              {showHistory ? <ChevronUp className="w-4 h-4 ml-1" /> : <ChevronDown className="w-4 h-4 ml-1" />}
-            </button>
-          )}
-          
-          {/* Histórico expandido */}
-          {showHistory && patientHistory.length > 0 && (
-            <div className="mt-3 space-y-2 max-h-48 overflow-y-auto">
-              {patientHistory.slice(0, 5).map((hist) => (
-                <div key={hist.id} className="bg-white p-3 rounded border text-sm">
-                  <div className="flex justify-between items-start">
-                    <span className="font-medium">
-                      {new Date(hist.consultationDate).toLocaleDateString('pt-BR')}
-                    </span>
-                    <span className={`px-2 py-0.5 rounded text-xs ${
-                      hist.status === 'completed' || hist.status === 'signed' 
-                        ? 'bg-green-100 text-green-600' 
-                        : 'bg-gray-100 text-gray-600'
-                    }`}>
-                      {hist.status === 'completed' || hist.status === 'signed' ? 'Finalizado' : 'Rascunho'}
-                    </span>
-                  </div>
-                  {hist.chiefComplaint && (
-                    <p className="text-gray-600 mt-1 truncate">
-                      <strong>QP:</strong> {hist.chiefComplaint}
-                    </p>
-                  )}
-                  {hist.diagnosis && (
-                    <p className="text-gray-600 truncate">
-                      <strong>HD:</strong> {hist.diagnosis}
-                    </p>
-                  )}
+            <>
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className="mt-3 flex items-center text-blue-600 hover:text-blue-700 text-sm"
+              >
+                <History className="w-4 h-4 mr-1" />
+                Ver {patientHistory.length} atendimento(s) anterior(es)
+                {showHistory ? <ChevronUp className="w-4 h-4 ml-1" /> : <ChevronDown className="w-4 h-4 ml-1" />}
+              </button>
+              
+              {showHistory && (
+                <div className="mt-3 space-y-2 max-h-48 overflow-y-auto">
+                  {patientHistory.slice(0, 5).map((hist) => (
+                    <div key={hist.id} className="bg-white p-3 rounded border text-sm">
+                      <div className="flex justify-between items-start">
+                        <span className="font-medium">
+                          {new Date(hist.consultationDate).toLocaleDateString('pt-BR')}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded text-xs ${
+                          hist.status === 'completed' || hist.status === 'signed' 
+                            ? 'bg-green-100 text-green-600' 
+                            : 'bg-gray-100 text-gray-600'
+                        }`}>
+                          {hist.status === 'completed' || hist.status === 'signed' ? 'Finalizado' : 'Rascunho'}
+                        </span>
+                      </div>
+                      {hist.chiefComplaint && (
+                        <p className="text-gray-600 mt-1 truncate">
+                          <strong>QP:</strong> {hist.chiefComplaint}
+                        </p>
+                      )}
+                      {hist.diagnosis && (
+                        <p className="text-gray-600 truncate">
+                          <strong>HD:</strong> {hist.diagnosis}
+                        </p>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           )}
         </div>
 
-        {/* Sinais Vitais (Colapsável) */}
+        {/* ANAMNESE PRÉ-CONSULTA */}
+        {hasAnamnesis && (
+          <div className="border-2 border-purple-200 rounded-lg overflow-hidden shadow-sm">
+            <button
+              onClick={() => setShowAnamnesis(!showAnamnesis)}
+              className="w-full flex items-center justify-between p-4 bg-gradient-to-r from-purple-50 to-blue-50 hover:from-purple-100 hover:to-blue-100 transition"
+            >
+              <div className="flex items-center">
+                <ClipboardList className="w-6 h-6 text-purple-600 mr-3" />
+                <div className="text-left">
+                  <span className="font-bold text-gray-800 text-lg">Anamnese Pré-Consulta</span>
+                  <p className="text-xs text-gray-600">Respostas fornecidas pelo paciente</p>
+                </div>
+                <span className="ml-3 px-3 py-1 bg-purple-600 text-white rounded-full text-sm font-bold">
+                  {Object.keys(anamnesisResponses).length}
+                </span>
+              </div>
+              {showAnamnesis ? <ChevronUp className="w-6 h-6 text-gray-600" /> : <ChevronDown className="w-6 h-6 text-gray-600" />}
+            </button>
+            
+            {showAnamnesis && (
+              <div className="p-5 border-t-2 border-purple-200 bg-gradient-to-br from-purple-50/30 to-blue-50/30">
+                {loadingAnamnesis ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mr-3"></div>
+                    <span className="text-gray-600">Carregando anamnese...</span>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {Object.values(anamnesisResponses).map((response, index) => (
+                      <div 
+                        key={response.questionId || index} 
+                        className="bg-white rounded-xl p-5 border-2 border-purple-100 shadow-sm hover:shadow-md transition"
+                      >
+                        <div className="flex items-start">
+                          <div className="flex-shrink-0">
+                            <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 text-white text-sm font-bold shadow">
+                              {index + 1}
+                            </span>
+                          </div>
+                          <div className="ml-4 flex-1">
+                            <p className="text-base font-semibold text-gray-800 mb-2">
+                              {response.questionLabel}
+                              {response.required && <span className="text-red-500 ml-1">*</span>}
+                            </p>
+                            <p className={`text-lg font-medium ${
+                              response.questionType === 'boolean' 
+                                ? (response.answer === true || response.answer === 'true' 
+                                    ? 'text-green-600 flex items-center' 
+                                    : 'text-red-600 flex items-center')
+                                : 'text-gray-900'
+                            }`}>
+                              {response.questionType === 'boolean' && (
+                                <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full mr-2 ${
+                                  response.answer === true || response.answer === 'true'
+                                    ? 'bg-green-100 text-green-600'
+                                    : 'bg-red-100 text-red-600'
+                                }`}>
+                                  {response.answer === true || response.answer === 'true' ? '✓' : '✗'}
+                                </span>
+                              )}
+                              {formatAnswer(response)}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    
+                    <div className="mt-4 p-4 bg-blue-50 border-2 border-blue-200 rounded-lg flex items-start">
+                      <Info className="w-5 h-5 text-blue-600 mr-3 flex-shrink-0 mt-0.5" />
+                      <div className="text-sm text-blue-800">
+                        <p className="font-semibold mb-1">ℹ️ Informação</p>
+                        <p>Estas respostas foram fornecidas pelo paciente durante o agendamento da consulta e podem auxiliar no atendimento.</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Sinais Vitais */}
         <div className="border rounded-lg">
           <button
             onClick={() => setShowVitalSigns(!showVitalSigns)}
@@ -451,7 +692,6 @@ export default function MedicalRecordForm({
 
         {/* Campos Clínicos */}
         <div className="space-y-4">
-          {/* Queixa Principal */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Queixa Principal (QP)
@@ -466,7 +706,6 @@ export default function MedicalRecordForm({
             />
           </div>
 
-          {/* História da Doença Atual */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               História da Doença Atual (HDA)
@@ -481,7 +720,6 @@ export default function MedicalRecordForm({
             />
           </div>
 
-          {/* Exame Físico */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Exame Físico / Observações
@@ -496,7 +734,6 @@ export default function MedicalRecordForm({
             />
           </div>
 
-          {/* Hipótese Diagnóstica */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Hipótese Diagnóstica (HD)
@@ -511,7 +748,6 @@ export default function MedicalRecordForm({
             />
           </div>
 
-          {/* Conduta/Prescrição */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Conduta / Prescrição
